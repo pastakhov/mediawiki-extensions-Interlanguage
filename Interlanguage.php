@@ -40,6 +40,7 @@ $wgExtensionCredits['parserhook'][] = array(
 $wgMessagesDirs['Interlanguage'] = __DIR__ . '/i18n/interlanguage';
 $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlanguage.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
+$wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgHooks['ParserFirstCallInit'][] = 'wfInterlanguageExtension';
 $wgResourceModules['ext.Interlanguage'] = array(
 	'styles' => 'modules/interlanguage.css',
@@ -48,7 +49,7 @@ $wgResourceModules['ext.Interlanguage'] = array(
 );
 
 /**
- * @param Parser $parser
+ * @param $parser Parser
  * @return bool
  */
 function wfInterlanguageExtension( $parser ) {
@@ -59,7 +60,37 @@ function wfInterlanguageExtension( $parser ) {
 		$wgHooks['OutputPageParserOutput'][] = $wgInterlanguageExtension;
 		$wgHooks['EditPage::showEditForm:fields'][] = array( $wgInterlanguageExtension, 'pageLinks' );
 		$wgHooks['SkinTemplateOutputPageBeforeExec'][] = $wgInterlanguageExtension;
+		$wgHooks['ContentAlterParserOutput'][] = $wgInterlanguageExtension;
+		$wgHooks['OutputPageParserOutput'][] = [ $wgInterlanguageExtension, 'onWikirougeOutputPageParserOutput' ];
 		$parser->setFunctionHook( 'interlanguage', array( $wgInterlanguageExtension, 'interlanguage' ), Parser::SFH_NO_HASH );
 	}
 	return true;
 }
+
+$wgHooks['ArticleDeleteComplete'][] = function (
+	WikiPage $wikiPage, User $user, string $reason, int $id, Content $content,
+	LogEntry $logEntry, int $archivedRevisionCount
+) {
+	global $wgInterlanguageExtensionDB, $wgLanguageCode;
+
+	if ( !isset( $wgInterlanguageExtensionDB ) || !$wgInterlanguageExtensionDB ) {
+		return true;
+	}
+	$title = $wikiPage->getTitle();
+	if ( !$title->isContentPage() ) {
+		return true;
+	}
+
+	$canonicalTitleText = InterlanguageExtension::getCanonicalTitleText( $title );
+
+	$foreignDbr = wfGetDB( DB_MASTER, [], $wgInterlanguageExtensionDB );
+	$foreignDbr->delete(
+		'interlanguage_links',
+		[
+			'ill_lang' => $wgLanguageCode,
+			'ill_title' => $canonicalTitleText,
+		],
+		__METHOD__
+	);
+	return true;
+};

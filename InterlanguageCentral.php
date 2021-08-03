@@ -38,11 +38,12 @@ $wgMessagesDirs['InterlanguageCentral'] = __DIR__ . '/i18n/central';
 $wgExtensionMessagesFiles['InterlanguageCentralMagic'] = dirname(__FILE__) . '/InterlanguageCentral.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageCentralExtensionPurgeJob'] = dirname(__FILE__) .  '/InterlanguageCentralExtensionPurgeJob.php';
 $wgAutoloadClasses['InterlanguageCentralExtension'] = dirname(__FILE__) . '/InterlanguageCentralExtension.php';
+$wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgHooks['ParserFirstCallInit'][] = 'wfInterlanguageCentralExtension';
 
 /**
- * @param Parser $parser
- * @return true
+ * @param $parser Parser
+ * @return bool
  */
 function wfInterlanguageCentralExtension( $parser ) {
 	global $wgHooks, $wgInterlanguageCentralExtension;
@@ -54,3 +55,39 @@ function wfInterlanguageCentralExtension( $parser ) {
 	}
 	return true;
 }
+
+$wgHooks['LoadExtensionSchemaUpdates'][] = function ( DatabaseUpdater $updater ) {
+	$updater->addExtensionTable( 'interlanguage_links', __DIR__ . '/db_patches/interlanguage_links.sql' );
+};
+
+$wgHooks['LanguageLinks'][] = function ( Title $title, &$links, &$linkFlags ) {
+	$pageId = $title->getArticleID();
+	if ( !$pageId ) {
+		return;
+	}
+
+	$a = [];
+	foreach ( $links as $l ) {
+		list ( $lang, $titleText ) = explode( ':', $l );
+		$a[$lang] = $titleText;
+	}
+
+	$conds = [ 'ill_from' => $title->mArticleID ];
+	$dbr = wfGetDB( DB_REPLICA );
+	if ( $a ) {
+		$conds[] = 'ill_lang NOT IN (' . $dbr->makeList( array_keys( $a ) ) . ')';
+	}
+	$res = $dbr->select(
+		'interlanguage_links',
+		[ 'ill_lang', 'ill_title' ],
+		$conds,
+		__FUNCTION__
+	);
+	foreach ( $res as $row ) {
+		if ( isset( $a[$row->ill_lang] ) ) {
+			continue;
+		}
+		$a[$row->ill_lang] = true;
+		$links[] = $row->ill_lang . ':' . $row->ill_title;
+	}
+};

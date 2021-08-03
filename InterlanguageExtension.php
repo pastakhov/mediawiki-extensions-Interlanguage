@@ -1,4 +1,7 @@
 <?php
+
+use MediaWiki\MediaWikiServices;
+
 /**
  * MediaWiki Interlanguage extension
  * InterlanguageExtension class
@@ -30,6 +33,161 @@ class InterlanguageExtension {
 	 */
 	public $foreignDbr = false;
 
+	public static function getCanonicalTitleText( Title $title ) {
+		$canonicalNamespaces = MediaWikiServices::getInstance()->getNamespaceInfo()->getCanonicalNamespaces();
+		$titleText = $title->getText();
+		$titleNamespace = $title->getNamespace();
+		if ( $titleNamespace !== 0 ) {
+			$titleText = $canonicalNamespaces[$titleNamespace] . ":" . $titleText;
+		}
+		return $titleText;
+	}
+
+	/**
+	 * @param OutputPage $outputPage
+	 * @param ParserOutput $parserOutput
+	 * @return bool
+	 */
+	function onWikirougeOutputPageParserOutput( $outputPage, $parserOutput ) {
+		$a = $parserOutput->getProperty( 'wikirouge-langlinks' );
+		if ( !$a ) {
+			return true;
+		}
+
+		$langLinks = $outputPage->getLanguageLinks();
+		foreach ( $a as $value ) {
+			$langLinks[] = "{$value['lang']}:{$value['*']}";
+		}
+		$outputPage->setLanguageLinks( array_unique( $langLinks ) );
+		return true;
+	}
+
+	/**
+	 * @param ParserOutput $parserOutput
+	 * @param Title $title
+	 * @return bool
+	 */
+	function onContentAlterParserOutput( $content, $title, $parserOutput ) {
+		global $wgInterlanguageExtensionDB, $wgLanguageCode, $wgInterlanguageExtensionInterwiki;
+
+		if ( !isset( $wgInterlanguageExtensionDB ) || !$wgInterlanguageExtensionDB ) {
+			return true;
+		}
+		if ( !$title->canExist() ) {
+			return true;
+		}
+
+//		$ilp = $parserOutput->getProperty( 'interlanguage_pages' );
+//		if ( $ilp !== false ) {
+//			return true;
+//		}
+
+		if ( !$this->foreignDbr ) {
+			$this->foreignDbr = wfGetDB( DB_MASTER, [], $wgInterlanguageExtensionDB );
+		}
+
+		$canonicalTitleText = self::getCanonicalTitleText( $title );
+
+		$foreignDB = $this->foreignDbr;
+		$tables = [ 'langlinks', 'page' ];
+		$vars = [ 'page_id', 'page_namespace', 'page_title' ];
+		$conds = [
+//				'LOWER( ll_title )' => strtolower( $title->getPrefixedDBkey() ),
+			'll_title' => $canonicalTitleText,
+			'll_lang' => $wgLanguageCode,
+			'page_id = ll_from',
+		];
+		$row = $foreignDB->selectRow( $tables, $vars, $conds, __FUNCTION__ );
+		$updateInterlanguageLinks = !$row;
+		if ( !$row ) {
+			// Try to find redirects
+			$db = wfGetDB( DB_REPLICA );
+			$res = $db->select(
+				[ 'redirect', 'page' ],
+				'page.*',
+				[
+					'rd_namespace' => $title->getNamespace(),
+					'rd_title' => $title->getDBkey(),
+					'rd_from = page_id',
+				],
+				__FUNCTION__
+			);
+			$redirects = [];
+			if ( $res ) {
+				foreach ( $res as $r ) {
+					$t = Title::newFromRow( $r );
+					$redirects[] = self::getCanonicalTitleText( $t );
+				}
+			}
+			if ( $redirects ) {
+				$conds['ll_title'] = $redirects;
+				$row = $foreignDB->selectRow( $tables, $vars, $conds, __FUNCTION__ );
+			}
+		}
+		if ( !$row ) {
+			// Try to find the same title
+			$row = $foreignDB->selectRow(
+				'page',
+				'*',
+				[
+					'page_namespace' => $title->getNamespace(),
+					'page_title' => $title->getDBkey(),
+				],
+				__METHOD__
+			);
+		}
+		if ( $row ) {
+			$pageId = $row->page_id;
+			$parserOutput->addModules( 'ext.Interlanguage' );
+			$a = $this->readLinksFromDB( $this->foreignDbr, $pageId );
+
+			$foreignLang = substr( $wgInterlanguageExtensionInterwiki, 0, -1 );
+			$foreignTitle = null;
+			$wikirougeLanglinks = [];
+			foreach ( $a as $value ) {
+				if ( $value['lang'] === $foreignLang ) {
+					$foreignTitle = $value['*'];
+				} elseif ( $value['lang'] === $wgLanguageCode ){
+					continue;
+				}
+				$wikirougeLanglinks[] = $value;
+			}
+			if ( !$foreignTitle ) {
+				$foreignNamespace = (int)$row->page_namespace;
+				$foreignTitle = $row->page_title;
+				if ( $foreignNamespace !== 0 ) {
+					$canonicalNamespaces = MediaWikiServices::getInstance()->getNamespaceInfo()->getCanonicalNamespaces();
+					$foreignTitle = $canonicalNamespaces[$foreignNamespace] . ":" . $foreignTitle;
+				}
+				$wikirougeLanglinks[] = [ 'lang' => $foreignLang, '*' => $foreignTitle ];
+			}
+			$parserOutput->setProperty( 'wikirouge-langlinks', $wikirougeLanglinks );
+			$this->addPageLink( $parserOutput, $foreignTitle );
+
+			if ( $updateInterlanguageLinks ) {
+				$index = [
+					'ill_from' => $pageId,
+					'ill_lang' => $wgLanguageCode,
+				];
+				$row = [
+					'ill_title' => $canonicalTitleText,
+				];
+				$foreignDB->upsert(
+					'interlanguage_links',
+					[ $index + $row ],
+					array_keys( $index ),
+					$row,
+					__METHOD__
+				);
+			}
+//			$this->sortLinks( $a );
+//			$this->linksToWiki( $a );
+//			$this->addPageLink( $parser->getOutput(), $foreignTitle );
+//			$parserOutput->setProperty( 'interlanguage_pages', @serialize( $ilp ) );
+		}
+		return true;
+	}
+
 	/**
 	 * The meat of the extension, the function that handles {{interlanguage:}} magic.
 	 *
@@ -38,17 +196,18 @@ class InterlanguageExtension {
 	 * @return string
 	 */
 	function interlanguage( Parser $parser, $param ) {
-		$this->addPageLink( $parser->getOutput(), $param );
+		$output = $parser->getOutput();
+		$this->addPageLink( $output, $param );
 		$parser->getOutput()->addModules( 'ext.Interlanguage' );
 
 		$a = $this->getLinks( $param );
-		list($res, $a) = $this->processLinks( $a, $param );
+		list( $res, $a ) = $this->processLinks( $a, $param );
 
-		if($res === false) {
-			list( $res, $a ) = $this->preservePageLinks( $parser->getTitle()->mArticleID );
+		if ( $res === false ) {
+			list( $res, $a ) = $this->preservePageLinks( $parser->mTitle->mArticleID );
 		}
 
-		if ($res === true) {
+		if ( $res === true ) {
 			$this->sortLinks( $a );
 			$res = $this->linksToWiki( $a );
 		}
@@ -57,8 +216,10 @@ class InterlanguageExtension {
 	}
 
 	/**
+	 * Get the links
+	 *
 	 * @param string $param
-	 * @return array[]
+	 * @return array
 	 */
 	function getLinks( $param ) {
 		global $wgInterlanguageExtensionDB, $wgInterlanguageExtensionApiUrl;
@@ -81,49 +242,51 @@ class InterlanguageExtension {
 	function getLinksFromDB( $param ) {
 		global $wgInterlanguageExtensionDB;
 
-		if( !$this->foreignDbr ) {
+		if ( !$this->foreignDbr ) {
 			$this->foreignDbr = wfGetDB( DB_REPLICA, array(), $wgInterlanguageExtensionDB );
 		}
 
 		list( $dbKey, $namespace ) = $this->getKeyNS( $param );
 
-		$a = array( 'query' => array( 'pages' => array() ) );
+		$a = [ 'query' => [ 'pages' => [] ] ];
 
 		$res = $this->foreignDbr->select(
 			'page',
-			array( 'page_id', 'page_is_redirect' ),
-			array(
+			[ 'page_id', 'page_is_redirect' ],
+			[
 				'page_title' => $dbKey,
 				'page_namespace' => $namespace
-			),
+			],
 			__FUNCTION__
 		);
 		$res = $res->fetchObject();
 
-		if( $res === false ) {
+		if ( $res === false ) {
 			// There is no such article on the central wiki
-			$a['query']['pages'][-1] = array( 'missing' => "" );
+			$a['query']['pages'][-1] = [ 'missing' => "" ];
 		} else {
-			if( $res->page_is_redirect ) {
+			if ( $res->page_is_redirect ) {
 				$res = $this->foreignDbr->select(
-					array( 'redirect', 'page' ),
+					[ 'redirect', 'page' ],
 					'page_id',
-					array(
+					[
 						'rd_title = page_title',
-						'rd_from' => $res->page_id
-					),
+						'rd_from' => $res->page_id,
+					],
 					__FUNCTION__
 				);
 				$res = $res->fetchObject();
 			}
 
-			$a['query']['pages'][0] = array( 'langlinks' => $this->readLinksFromDB( $this->foreignDbr, $res->page_id ) );
+			$a['query']['pages'][0] = [ 'langlinks' => $this->readLinksFromDB( $this->foreignDbr, $res->page_id ) ];
 		}
 
 		return $a;
 	}
 
 	/**
+	 * Get the links from an API
+	 *
 	 * @param string $param
 	 * @return array[] API response
 	 */
@@ -152,27 +315,27 @@ class InterlanguageExtension {
 
 		// Be sure to set $res to bool false in case of failure
 		$res = false;
-		if(isset($a['query']['pages']) && is_array($a['query']['pages'])) {
-			$a = array_shift($a['query']['pages']);
-			if( isset( $a['missing'] ) ) {
+		if ( isset( $a['query']['pages'] ) && is_array( $a['query']['pages'] ) ) {
+			$a = array_shift( $a['query']['pages'] );
+			if ( isset( $a['missing'] ) ) {
 				// There is no such article on the central wiki, so we will display a broken link
 				// to the article on the central wiki
-				$res = array(
+				$res = [
 					Linker::link(
 						Title::newFromText( $wgInterlanguageExtensionInterwiki . $this->translateNamespace( $param ) ),
 						$wgInterlanguageExtensionInterwiki . $param,
-						array(),
-						array(),
-						array( 'broken' )
+						[],
+						[],
+						[ 'broken' ]
 					),
 					'noparse' => true,
 					'isHTML' => true
-				);
+				];
 			} else {
-				if( isset( $a['langlinks'] ) ) {
+				if ( isset( $a['langlinks'] ) ) {
 					// Prepare the array for sorting
 					$a = $a['langlinks'];
-					if( is_array( $a ) ) {
+					if ( is_array( $a ) ) {
 						$res = true;
 					}
 				} else {
@@ -181,7 +344,7 @@ class InterlanguageExtension {
 				}
 			}
 		}
-		return array( $res, $a );
+		return [ $res, $a ];
 	}
 
 	/**
@@ -192,34 +355,40 @@ class InterlanguageExtension {
 	 */
 	function addPageLink( ParserOutput $parserOutput, $param ) {
 		$ilp = $parserOutput->getProperty( 'interlanguage_pages' );
-		if(!$ilp) $ilp = array(); else $ilp = @unserialize( $ilp );
-		if(!isset($ilp[$param])) {
+		if ( !$ilp ) {
+			$ilp = [];
+		} else {
+			$ilp = @unserialize( $ilp );
+		}
+		if ( !isset( $ilp[$param] ) ) {
 			$ilp[$param] = true;
 			$parserOutput->setProperty( 'interlanguage_pages', @serialize( $ilp ) );
 		}
 	}
 
 	/**
+	 * Get the list of page links.
+	 *
 	 * @param ParserOutput $parserOutput
 	 * @return array|false Array of page links. Empty array if there are no links, literal false if links have not
 	 * been yet set.
 	 */
 	function getPageLinks( $parserOutput ) {
 		$ilp = $parserOutput->getProperty( 'interlanguage_pages' );
-		if($ilp !== false) $ilp = @unserialize( $ilp );
+		if ( $ilp !== false ) {
+			$ilp = @unserialize( $ilp );
+		}
 		return $ilp;
 	}
 
 	/**
 	 * Copies interlanguage pages from ParserOutput to OutputPage.
-	 *
-	 * @param OutputPage $out
-	 * @param ParserOutput $parserOutput
-	 * @return true
 	 */
 	function onOutputPageParserOutput( &$out, $parserOutput ) {
 		$pagelinks = $this->getPageLinks( $parserOutput );
-		if( $pagelinks ) $out->interlanguage_pages = $pagelinks;
+		if ( $pagelinks ) {
+			$out->interlanguage_pages = $pagelinks;
+		}
 		return true;
 	}
 
@@ -230,17 +399,19 @@ class InterlanguageExtension {
 	 * @return true
 	 */
 	function pageLinks( $editPage ) {
-		if( isset( $editPage->mParserOutput ) ) {
+		if ( isset( $editPage->mParserOutput ) ) {
 			$pagelinks = $this->getPageLinks( $editPage->mParserOutput );
-			if(!$pagelinks) $pagelinks = array();
+			if ( !$pagelinks ) {
+				$pagelinks = [];
+			}
 		} else {
 			// If there is no ParserOutput, it means the article was not parsed, and we should
 			// load links from the DB.
-			$pagelinks = $this->loadPageLinks( $editPage->mArticle->getTitle()->mArticleID );
+			$pagelinks = $this->loadPageLinks( $editPage->mArticle->mTitle->mArticleID );
 		}
 		$pagelinktitles = $this->makePageLinkTitles( $pagelinks );
 
-		if( count( $pagelinktitles ) ) {
+		if ( count( $pagelinktitles ) ) {
 			$ple = wfMessage( 'interlanguage-pagelinksexplanation' )->escaped();
 
 			$res = <<<THEEND
@@ -248,8 +419,8 @@ class InterlanguageExtension {
 <div class="mw-interlanguageExtensionEditLinksExplanation"><p>$ple</p></div>
 <ul>
 THEEND;
-			foreach($pagelinktitles as $title) {
-				$link = Linker::link( $title,$title->getText(), array(), array( 'action' => 'edit' ) );
+			foreach ( $pagelinktitles as $title ) {
+				$link = Linker::link( $title,$title->getText(), [], [ 'action' => 'formedit' ] );
 				$res .= "<li>$link</li>\n";
 			}
 			$res .= <<<THEEND
@@ -271,7 +442,7 @@ THEEND;
 	 */
 	function getKeyNS( $param ) {
 		$paramTitle = Title::newFromText( $param );
-		if( $paramTitle ) {
+		if ( $paramTitle ) {
 			$dbKey = $paramTitle->getDBkey();
 			$namespace = $paramTitle->getNamespace();
 		} else {
@@ -279,7 +450,7 @@ THEEND;
 			$dbKey = strtr( $param, ' ', '_' );
 			$namespace = 0;
 		}
-		return array( $dbKey, $namespace );
+		return [ $dbKey, $namespace ];
 	}
 
 	/**
@@ -290,7 +461,7 @@ THEEND;
 	 */
 	function translateNamespace( $param ) {
 		list( $dbKey, $namespace ) = $this->getKeyNS( $param );
-		if( $namespace == 0 ) {
+		if ( $namespace == 0 ) {
 			return $dbKey;
 		} else {
 			$canonicalNamespaces = MWNamespace::getCanonicalNamespaces();
@@ -306,16 +477,28 @@ THEEND;
 	 * @return true
 	 */
 	function onSkinTemplateOutputPageBeforeExec( &$skin, &$template ) {
-		global $wgOut;
-		$pagelinktitles = $this->makePageLinkTitles( $wgOut->interlanguage_pages ?? [] );
+		global $wgOut, $wgInterlanguageExtensionInterwiki;
 
-		foreach( $pagelinktitles as $title ) {
-			$template->data['language_urls'][] = array(
-				'href' => $title->getFullURL( array( 'action' => 'edit' ) ),
+		$pagelinks = isset( $wgOut->interlanguage_pages )? $wgOut->interlanguage_pages: array();
+		$pagelinktitles = $this->makePageLinkTitles( $pagelinks );
+
+		// Allow quick page creation when the title will be the same
+		if ( !$pagelinktitles && $wgInterlanguageExtensionInterwiki ) {
+			$pagelinktitles[] = Title::newFromText(
+				$wgInterlanguageExtensionInterwiki . self::getCanonicalTitleText( $skin->getTitle() )
+			);
+		}
+
+		foreach ( $pagelinktitles as $title ) {
+			if ( !$title ) {
+				continue;
+			}
+			$template->data['language_urls'][] = [
+				'href' => $title->getFullURL( [ 'action' => 'formedit' ] ),
 				'text' => wfMessage( 'interlanguage-editlinks' )->text(),
 				'title' => $title->getText(),
 				'class' => "interwiki-interlanguage",
-			);
+			];
 		}
 
 		return true;
@@ -330,18 +513,17 @@ THEEND;
 	function makePageLinkTitles( $pagelinks ) {
 		global $wgInterlanguageExtensionInterwiki;
 
-		$pagelinktitles = array();
-		if( is_array( $pagelinks ) ) {
-			foreach( $pagelinks as $page => $dummy ) {
+		$pagelinktitles = [];
+		if ( is_array( $pagelinks ) ) {
+			foreach ( $pagelinks as $page => $dummy ) {
 				$title = Title::newFromText( $wgInterlanguageExtensionInterwiki . $this->translateNamespace( $page ) );
-				if( $title ) {
+				if ( $title ) {
 					$pagelinktitles[] = $title;
 				}
 			}
 		}
 
 		return $pagelinktitles;
-
 	}
 
 	/**
@@ -353,8 +535,8 @@ THEEND;
 	 */
 	function loadPageLinks( $articleid ) {
 		$dbr = wfGetDB( DB_REPLICA );
-		$res = $dbr->select( 'page_props', 'pp_value', array( 'pp_page' => $articleid, 'pp_propname' => 'interlanguage_pages' ), __FUNCTION__);
-		$pagelinks = array();
+		$res = $dbr->select( 'page_props', 'pp_value', [ 'pp_page' => $articleid, 'pp_propname' => 'interlanguage_pages' ], __FUNCTION__);
+		$pagelinks = [];
 		$row = $res->fetchObject();
 		if ( $row ) {
 			$pagelinks = @unserialize( $row->pp_value );
@@ -373,7 +555,7 @@ THEEND;
 		$dbr = wfGetDB( DB_REPLICA );
 		$a = $this->readLinksFromDB( $dbr, $articleid );
 		$res = true;
-		return array( $res, $a );
+		return [ $res, $a ];
 	}
 
 	/**
@@ -386,14 +568,14 @@ THEEND;
 	 */
 	function readLinksFromDB( $dbr, $articleid ) {
 		$res = $dbr->select(
-			array( 'langlinks' ),
-			array( 'll_lang', 'll_title' ),
-			array( 'll_from' => $articleid ),
+			[ 'langlinks' ],
+			[ 'll_lang', 'll_title' ],
+			[ 'll_from' => $articleid ],
 			__FUNCTION__
 		);
-		$a = array();
+		$a = [];
 		foreach( $res as $row ) {
-			$a[] = array( 'lang' => $row->ll_lang, '*' => $row->ll_title );
+			$a[] = [ 'lang' => $row->ll_lang, '*' => $row->ll_title ];
 		}
 		return $a;
 	}
@@ -407,13 +589,13 @@ THEEND;
 		global $wgInterlanguageExtensionSort;
 		switch( $wgInterlanguageExtensionSort ) {
 			case 'code':
-				usort($a, 'InterlanguageExtension::compareCode');
+				usort( $a, 'InterlanguageExtension::compareCode' );
 				break;
 			case 'alphabetic':
-				usort($a, 'InterlanguageExtension::compareAlphabetic');
+				usort( $a, 'InterlanguageExtension::compareAlphabetic' );
 				break;
 			case 'alphabetic_revised':
-				usort($a, 'InterlanguageExtension::compareAlphabeticRevised');
+				usort( $a, 'InterlanguageExtension::compareAlphabeticRevised' );
 				break;
 		}
 	}
@@ -427,8 +609,8 @@ THEEND;
 	function linksToWiki( $a ) {
 		global $wgLanguageCode;
 		$res = '';
-		foreach($a as $v) {
-			if($v['lang'] != $wgLanguageCode) {
+		foreach ( $a as $v ) {
+			if ( $v['lang'] != $wgLanguageCode ) {
 				$res .= "[[".$v['lang'].':'.$v['*']."]]";
 			}
 		}
@@ -442,8 +624,8 @@ THEEND;
 	 * @param array $b
 	 * @return int
 	 */
-	static function compareCode($a, $b) {
-		return strcmp($a['lang'], $b['lang']);
+	static function compareCode( $a, $b ) {
+		return strcmp( $a['lang'], $b['lang'] );
 	}
 
 	/**
@@ -455,10 +637,10 @@ THEEND;
 	 * @param array $b
 	 * @return int
 	 */
-	static function compareAlphabetic($a, $b) {
+	static function compareAlphabetic( $a, $b ) {
 		global $wgInterlanguageExtensionSortPrepend;
 		//
-		static $order = array(
+		static $order = [
 			'ace', 'af', 'ak', 'als', 'am', 'ang', 'ab', 'ar', 'an', 'arc',
 			'roa-rup', 'frp', 'as', 'ast', 'gn', 'av', 'ay', 'az', 'bm', 'bn',
 			'zh-min-nan', 'nan', 'map-bms', 'ba', 'be', 'be-x-old', 'bh', 'bcl',
@@ -486,18 +668,17 @@ THEEND;
 			'chr', 'chy', 've', 'tr', 'tk', 'tw', 'udm', 'bug', 'uk', 'ur',
 			'ug', 'za', 'vec', 'vi', 'vo', 'fiu-vro', 'wa', 'zh-classical',
 			'vls', 'war', 'wo', 'wuu', 'ts', 'yi', 'yo', 'zh-yue', 'diq', 'zea',
-			'bat-smg', 'zh', 'zh-tw', 'zh-cn',
-		);
+			'bat-smg', 'zh', 'zh-tw', 'zh-cn', ];
 
-		if(isset($wgInterlanguageExtensionSortPrepend) && is_array($wgInterlanguageExtensionSortPrepend)) {
-			$order = array_merge($wgInterlanguageExtensionSortPrepend, $order);
-			unset($wgInterlanguageExtensionSortPrepend);
+		if ( isset( $wgInterlanguageExtensionSortPrepend ) && is_array( $wgInterlanguageExtensionSortPrepend ) ) {
+			$order = array_merge( $wgInterlanguageExtensionSortPrepend, $order );
+			unset( $wgInterlanguageExtensionSortPrepend );
 		}
 
-		$a=array_search($a['lang'], $order);
-		$b=array_search($b['lang'], $order);
+		$a = array_search( $a['lang'], $order );
+		$b = array_search( $b['lang'], $order );
 
-		return ($a>$b)?1:(($a<$b)?-1:0);
+		return ( $a > $b ) ? 1 : ( ( $a < $b ) ? - 1 : 0 );
 	}
 
 	/**
@@ -510,9 +691,9 @@ THEEND;
 	 * @param array $b
 	 * @return int
 	 */
-	static function compareAlphabeticRevised($a, $b) {
+	static function compareAlphabeticRevised( $a, $b ) {
 		global $wgInterlanguageExtensionSortPrepend;
-		static $order = array(
+		static $order = [
 			'ace', 'af', 'ak', 'als', 'am', 'ang', 'ab', 'ar', 'an', 'arc',
 			'roa-rup', 'frp', 'as', 'ast', 'gn', 'av', 'ay', 'az', 'id', 'ms',
 			'bm', 'bn', 'zh-min-nan', 'nan', 'map-bms', 'jv', 'su', 'ba', 'be',
@@ -540,17 +721,16 @@ THEEND;
 			'tokipona', 'tp', 'chr', 'chy', 've', 'tr', 'tk', 'tw', 'udm', 'uk',
 			'ur', 'ug', 'za', 'vec', 'vo', 'fiu-vro', 'wa', 'zh-classical',
 			'vls', 'war', 'wo', 'wuu', 'ts', 'yi', 'yo', 'zh-yue', 'diq', 'zea',
-			'bat-smg', 'zh', 'zh-tw', 'zh-cn',
-		);
+			'bat-smg', 'zh', 'zh-tw', 'zh-cn', ];
 
-		if(isset($wgInterlanguageExtensionSortPrepend) && is_array($wgInterlanguageExtensionSortPrepend)) {
-			$order = array_merge($wgInterlanguageExtensionSortPrepend, $order);
-			unset($wgInterlanguageExtensionSortPrepend);
+		if ( isset( $wgInterlanguageExtensionSortPrepend ) && is_array( $wgInterlanguageExtensionSortPrepend ) ) {
+			$order = array_merge( $wgInterlanguageExtensionSortPrepend, $order );
+			unset( $wgInterlanguageExtensionSortPrepend );
 		}
 
-		$a=array_search($a['lang'], $order);
-		$b=array_search($b['lang'], $order);
+		$a = array_search( $a['lang'], $order );
+		$b = array_search( $b['lang'], $order );
 
-		return ($a>$b)?1:(($a<$b)?-1:0);
+		return ( $a > $b ) ? 1 : ( ( $a < $b ) ? - 1 : 0 );
 	}
 }

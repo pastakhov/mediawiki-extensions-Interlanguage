@@ -44,16 +44,16 @@ class InterlanguageCentralExtension {
 
 	/**
 	 * @param LinksUpdate $linksUpdate
-	 * @return true
+	 * @return bool
 	 */
 	function onLinksUpdate( &$linksUpdate ) {
 		$oldILL = $this->getILL( DB_REPLICA, $linksUpdate->mTitle);
 		$newILL = $linksUpdate->mInterlangs;
 
 		//Convert $newILL to the same format as $oldILL
-		foreach($newILL as $k => $v) {
-			if(!is_array($v)) {
-				$newILL[$k] = array($v => true);
+		foreach( $newILL as $k => $v ) {
+			if( !is_array( $v ) ) {
+				$newILL[$k] = [ $v => true ];
 			}
 		}
 
@@ -69,8 +69,8 @@ class InterlanguageCentralExtension {
 				"InterlanguageCentralExtension::arrayCompareKeys"
 			))
 		) {
-			$ill = array_merge_recursive($oldILL, $newILL);
-			$job = new InterlanguageCentralExtensionPurgeJob( $linksUpdate->mTitle, array('ill' => $ill) );
+			$ill = array_merge_recursive( $oldILL, $newILL );
+			$job = new InterlanguageCentralExtensionPurgeJob( $linksUpdate->mTitle, [ 'ill' => $ill ] );
 			JobQueueGroup::singleton()->push( $job );
 		}
 
@@ -82,20 +82,26 @@ class InterlanguageCentralExtension {
 	 * @param Title $title
 	 * @return array[]
 	 */
-	function getILL( $db, $title ) {
+	public function getILL( int $db, Title $title ) {
 		$dbr = wfGetDB( $db );
-		$res = $dbr->select( 'langlinks', array( 'll_lang', 'll_title' ), array( 'll_from' => $title->mArticleID), __FUNCTION__);
-		$a = array();
-		foreach( $res as $row ) {
-			if(!isset($a[$row->ll_lang])) {
-				$a[$row->ll_lang] = array();
+		$res = $dbr->select(
+			'langlinks',
+			[ 'll_lang', 'll_title' ],
+			[ 'll_from' => $title->mArticleID ],
+			__FUNCTION__
+		);
+		$a = [];
+		foreach ( $res as $row ) {
+			if ( !isset( $a[$row->ll_lang] ) ) {
+				$a[$row->ll_lang] = [];
 			}
 			$a[$row->ll_lang][$row->ll_title] = true;
 		}
+
 		return $a;
 	}
 
-	static function arrayCompareKeys($a, $b) {
-		return count(array_diff_key($a, $b))? 1: (count(array_diff_key($b, $a))? -1: 0);
+	static function arrayCompareKeys( $a, $b ) {
+		return count( array_diff_key( $a, $b ) ) ? 1 : ( count( array_diff_key( $b, $a ) ) ? -1 : 0 );
 	}
 }

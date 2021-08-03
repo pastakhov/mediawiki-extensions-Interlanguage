@@ -1,4 +1,7 @@
 <?php
+
+use MediaWiki\MediaWikiServices;
+
 /**
  * MediaWiki InterlanguageCentral extension
  * InterlanguageCentralExtensionPurgeJob class
@@ -39,8 +42,11 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 		//sleep() could be added here to reduce unnecessary use
 		$ill = $this->params['ill'];
 
+		$mwServices = MediaWikiServices::getInstance();
+
 		foreach($ill as $lang => $pages) {
-			$iw = Interwiki::fetch( $lang );
+//			$iw = Interwiki::fetch( $lang );
+			$iw = $mwServices->getInterwikiLookup()->fetch( $lang );
 			if( !$iw ) continue;
 			$apiUrl = $iw->getAPI();
 			if( !$apiUrl ) continue;
@@ -49,7 +55,8 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 				'format'	=> 'json', //Smallest response
 				'titles'	=> implode( '|', array_keys( $pages ) )
 			) );
-			Http::post( $apiUrl );
+//			Http::post( $apiUrl );
+			$mwServices->getHttpRequestFactory()->post( $apiUrl );
 			//TODO: error handling
 		}
 
