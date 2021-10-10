@@ -246,7 +246,7 @@ class InterlanguageExtension {
 			$this->foreignDbr = wfGetDB( DB_REPLICA, array(), $wgInterlanguageExtensionDB );
 		}
 
-		list( $dbKey, $namespace ) = $this->getKeyNS( $param );
+		list( $dbKey, $namespace ) = self::getKeyNS( $param );
 
 		$a = [ 'query' => [ 'pages' => [] ] ];
 
@@ -292,7 +292,7 @@ class InterlanguageExtension {
 	 */
 	function getLinksFromApi( $param ) {
 		global $wgInterlanguageExtensionApiUrl;
-		$title = $this->translateNamespace( $param );
+		$title = self::translateNamespace( $param );
 
 		$url = $wgInterlanguageExtensionApiUrl .
 			"?action=query&prop=langlinks&" .
@@ -322,7 +322,7 @@ class InterlanguageExtension {
 				// to the article on the central wiki
 				$res = [
 					Linker::link(
-						Title::newFromText( $wgInterlanguageExtensionInterwiki . $this->translateNamespace( $param ) ),
+						Title::newFromText( $wgInterlanguageExtensionInterwiki . self::translateNamespace( $param ) ),
 						$wgInterlanguageExtensionInterwiki . $param,
 						[],
 						[],
@@ -387,7 +387,7 @@ class InterlanguageExtension {
 	function onOutputPageParserOutput( &$out, $parserOutput ) {
 		$pagelinks = $this->getPageLinks( $parserOutput );
 		if ( $pagelinks ) {
-			$out->interlanguage_pages = $pagelinks;
+			$out->setProperty( 'interlanguage_pages', $pagelinks );
 		}
 		return true;
 	}
@@ -409,7 +409,7 @@ class InterlanguageExtension {
 			// load links from the DB.
 			$pagelinks = $this->loadPageLinks( $editPage->mArticle->mTitle->mArticleID );
 		}
-		$pagelinktitles = $this->makePageLinkTitles( $pagelinks );
+		$pagelinktitles = self::makePageLinkTitles( $pagelinks );
 
 		if ( count( $pagelinktitles ) ) {
 			$ple = wfMessage( 'interlanguage-pagelinksexplanation' )->escaped();
@@ -440,7 +440,7 @@ THEEND;
 	 * @param string $param Page title
 	 * @return array
 	 */
-	function getKeyNS( $param ) {
+	public static function getKeyNS( $param ) {
 		$paramTitle = Title::newFromText( $param );
 		if ( $paramTitle ) {
 			$dbKey = $paramTitle->getDBkey();
@@ -459,8 +459,8 @@ THEEND;
 	 * @param string $param Page title
 	 * @return string
 	 */
-	function translateNamespace( $param ) {
-		list( $dbKey, $namespace ) = $this->getKeyNS( $param );
+	public static function translateNamespace( $param ) {
+		list( $dbKey, $namespace ) = self::getKeyNS( $param );
 		if ( $namespace == 0 ) {
 			return $dbKey;
 		} else {
@@ -477,10 +477,11 @@ THEEND;
 	 * @return true
 	 */
 	function onSkinTemplateOutputPageBeforeExec( &$skin, &$template ) {
-		global $wgOut, $wgInterlanguageExtensionInterwiki;
+		global $wgInterlanguageExtensionInterwiki;
 
-		$pagelinks = isset( $wgOut->interlanguage_pages )? $wgOut->interlanguage_pages: array();
-		$pagelinktitles = $this->makePageLinkTitles( $pagelinks );
+		$out = $skin->getOutput();
+		$pagelinks = $out->getProperty( 'interlanguage_pages' ) ?: [];
+		$pagelinktitles = self::makePageLinkTitles( $pagelinks );
 
 		// Allow quick page creation when the title will be the same
 		if ( !$pagelinktitles && $wgInterlanguageExtensionInterwiki ) {
@@ -505,18 +506,60 @@ THEEND;
 	}
 
 	/**
+	 * @param BaseTemplate $template
+	 * @param string $name
+	 * @param string &$content
+	 */
+	public static function onBaseTemplateAfterPortlet( BaseTemplate $template, $name, &$content ) {
+		if ( $name !== 'lang' ) {
+			return;
+		}
+
+		global $wgInterlanguageExtensionInterwiki;
+		$skin = $template->getSkin();
+		$out = $skin->getOutput();
+
+		$pagelinks = $out->getProperty( 'interlanguage_pages' ) ?: [];
+		$pagelinktitles = self::makePageLinkTitles( $pagelinks );
+
+		// Allow quick page creation when the title will be the same
+		if ( !$pagelinktitles && $wgInterlanguageExtensionInterwiki ) {
+			$pagelinktitles[] = Title::newFromText(
+				$wgInterlanguageExtensionInterwiki . self::getCanonicalTitleText( $skin->getTitle() )
+			);
+		}
+
+		foreach ( $pagelinktitles as $title ) {
+			if ( !$title ) {
+				continue;
+			}
+			// <a href="https://wikirouge.net/texts/en/Main_Page?action=formedit" title="Main Page">Modifier les liens</a>
+			$content .= Html::element(
+				'a',
+				[
+					'href' => $title->getFullURL( [ 'action' => 'formedit' ] ),
+					'title' => $title->getText(),
+//					'class' => "interwiki-interlanguage",
+				],
+				wfMessage( 'interlanguage-editlinks' )->text()
+			);
+			break;
+		}
+	}
+
+	/**
 	 * Make an array of Titles from the array of links.
 	 *
 	 * @param array $pagelinks
 	 * @return Title[] If there are no page links, an empty array is returned.
 	 */
-	function makePageLinkTitles( $pagelinks ) {
+	public static function makePageLinkTitles( $pagelinks ) {
 		global $wgInterlanguageExtensionInterwiki;
 
 		$pagelinktitles = [];
 		if ( is_array( $pagelinks ) ) {
 			foreach ( $pagelinks as $page => $dummy ) {
-				$title = Title::newFromText( $wgInterlanguageExtensionInterwiki . $this->translateNamespace( $page ) );
+				$title = Title::newFromText( $wgInterlanguageExtensionInterwiki . self::translateNamespace( $page ) );
 				if ( $title ) {
 					$pagelinktitles[] = $title;
 				}
