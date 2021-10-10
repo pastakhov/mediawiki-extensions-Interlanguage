@@ -28,25 +28,25 @@ $wgInterlanguageExtensionInterwiki = "";
 $wgInterlanguageExtensionSort = 'none';
 $wgInterlanguageExtensionSortPrepend = false;
 
-$wgExtensionCredits['parserhook'][] = array(
+$wgExtensionCredits['parserhook'][] = [
 	'path'			=> __FILE__,
 	'name'			=> 'Interlanguage',
 	'author'		=> 'Nikola Smolenski',
 	'url'			=> 'https://www.mediawiki.org/wiki/Extension:Interlanguage',
 	'version'		=> '1.6.1',
 	'descriptionmsg'	=> 'interlanguage-desc',
-);
+];
 
 $wgMessagesDirs['Interlanguage'] = __DIR__ . '/i18n/interlanguage';
 $wgExtensionMessagesFiles['InterlanguageMagic'] = dirname(__FILE__) . '/Interlanguage.i18n.magic.php';
 $wgAutoloadClasses['InterlanguageExtension'] = dirname(__FILE__) . '/InterlanguageExtension.php';
 $wgAutoloadLocalClasses['ApiQueryLangLinks'] = dirname(__FILE__) . '/api/ApiQueryLangLinks.php';
 $wgHooks['ParserFirstCallInit'][] = 'wfInterlanguageExtension';
-$wgResourceModules['ext.Interlanguage'] = array(
+$wgResourceModules['ext.Interlanguage'] = [
 	'styles' => 'modules/interlanguage.css',
 	'localBasePath' => dirname( __FILE__ ),
 	'remoteExtPath' => 'Interlanguage',
-);
+];
 
 /**
  * @param $parser Parser
@@ -58,11 +58,12 @@ function wfInterlanguageExtension( $parser ) {
 	if( !isset($wgInterlanguageExtension) ) {
 		$wgInterlanguageExtension = new InterlanguageExtension();
 		$wgHooks['OutputPageParserOutput'][] = $wgInterlanguageExtension;
-		$wgHooks['EditPage::showEditForm:fields'][] = array( $wgInterlanguageExtension, 'pageLinks' );
+		$wgHooks['EditPage::showEditForm:fields'][] = [ $wgInterlanguageExtension, 'pageLinks' ];
 		$wgHooks['SkinTemplateOutputPageBeforeExec'][] = $wgInterlanguageExtension;
+		$wgHooks['BaseTemplateAfterPortlet'][] = $wgInterlanguageExtension;
 		$wgHooks['ContentAlterParserOutput'][] = $wgInterlanguageExtension;
 		$wgHooks['OutputPageParserOutput'][] = [ $wgInterlanguageExtension, 'onWikirougeOutputPageParserOutput' ];
-		$parser->setFunctionHook( 'interlanguage', array( $wgInterlanguageExtension, 'interlanguage' ), Parser::SFH_NO_HASH );
+		$parser->setFunctionHook( 'interlanguage', [ $wgInterlanguageExtension, 'interlanguage' ], Parser::SFH_NO_HASH );
 	}
 	return true;
 }

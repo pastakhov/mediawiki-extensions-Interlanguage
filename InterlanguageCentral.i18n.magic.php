@@ -5,9 +5,9 @@
  * @addtogroup Extensions
  */
 
-$magicWords = array();
+$magicWords = [];
 
 /** English (English) */
-$magicWords['en'] = array(
-        'languagelink' => array( 0, 'languagelink' ),
-);
+$magicWords['en'] = [
+        'languagelink' => [ 0, 'languagelink' ],
+];

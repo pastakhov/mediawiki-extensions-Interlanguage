@@ -50,11 +50,11 @@ class InterlanguageCentralExtensionPurgeJob extends Job {
 			if( !$iw ) continue;
 			$apiUrl = $iw->getAPI();
 			if( !$apiUrl ) continue;
-			$apiUrl .= '?' . wfArrayToCGI( array(
+			$apiUrl .= '?' . wfArrayToCGI( [
 				'action'	=> 'purge',
 				'format'	=> 'json', //Smallest response
 				'titles'	=> implode( '|', array_keys( $pages ) )
-			) );
+			] );
 //			Http::post( $apiUrl );
 			$mwServices->getHttpRequestFactory()->post( $apiUrl );
 			//TODO: error handling

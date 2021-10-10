@@ -26,13 +26,13 @@
 $wgInterlanguageCentralExtensionIndexUrl = "";
 
 $wgJobClasses['purgeDependentWikis'] = 'InterlanguageCentralExtensionPurgeJob';
-$wgExtensionCredits['parserhook'][] = array(
+$wgExtensionCredits['parserhook'][] = [
 	'name'			=> 'Interlanguage Central',
 	'author'		=> 'Nikola Smolenski',
 	'url'			=> 'https://www.mediawiki.org/wiki/Extension:Interlanguage',
 	'version'		=> '1.4.0',
 	'descriptionmsg'	=> 'interlanguagecentral-desc',
-);
+];
 
 $wgMessagesDirs['InterlanguageCentral'] = __DIR__ . '/i18n/central';
 $wgExtensionMessagesFiles['InterlanguageCentralMagic'] = dirname(__FILE__) . '/InterlanguageCentral.i18n.magic.php';
@@ -51,7 +51,7 @@ function wfInterlanguageCentralExtension( $parser ) {
 	if( !isset( $wgInterlanguageCentralExtension ) ) {
 		$wgInterlanguageCentralExtension = new InterlanguageCentralExtension();
 		$wgHooks['LinksUpdate'][] = $wgInterlanguageCentralExtension;
-		$parser->setFunctionHook( 'languagelink', array( $wgInterlanguageCentralExtension, 'languagelink' ), Parser::SFH_NO_HASH );
+		$parser->setFunctionHook( 'languagelink', [ $wgInterlanguageCentralExtension, 'languagelink' ], Parser::SFH_NO_HASH );
 	}
 	return true;
 }

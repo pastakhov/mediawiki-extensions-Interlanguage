@@ -26,7 +26,7 @@
 
 class InterlanguageCentralExtension {
 	//ILL = InterLanguageLinks
-	public $oldILL = array();
+	public $oldILL = [];
 
 	/**
 	 * @param Parser $parser
